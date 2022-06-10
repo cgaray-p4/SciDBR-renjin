@@ -1,0 +1,99 @@
+name: Test Suite
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        SCIDB_VER: [19.11]
+        OS: [xenial, centos-7]
+        R: [ '3.5.3', '3.6.1' ]
+
+    services:
+      scidb:
+        image: ghcr.io/rvernica/scidb:${{ matrix.SCIDB_VER }}-${{ matrix.OS }}
+        volumes:
+          - /dev/shm
+          - /sys/fs/cgroup:/sys/fs/cgroup
+          - /tmp/$(mktemp --directory):/run
+        ports:
+          - 8080:8080
+          - 8083:8083
+        env:
+          EXTRA_SCIDB_LIBS_SYSTEMCTL_FAIL_OK: true
+        options: --name scidb
+
+    steps:
+      - name: Setup R
+        uses: r-lib/actions/setup-r@v1
+        with:
+          r-version: ${{ matrix.R }}
+
+      - name: Check out repository
+        uses: actions/checkout@v2
+
+      - name: Start SciDB in CentOS-7
+        run: docker exec scidb /opt/scidb/${{ matrix.SCIDB_VER }}/bin/scidbctl.py start scidb
+        if: ${{ matrix.OS == 'centos-7' }}
+
+      - name: Install extra-scidb-libs
+        run: docker exec scidb sh -c "wget -O- https://raw.githubusercontent.com/Paradigm4/extra-scidb-libs/v${{ matrix.SCIDB_VER }}/install.sh | sh"
+
+      - name: Load accelerated_io_tools plugin
+        run: docker exec scidb iquery --afl --query "load_library('accelerated_io_tools')"
+
+      - name: Enable AIO in Shim
+        run: docker exec scidb bash -c "echo aio=1 >> /var/lib/shim/conf"
+
+      - name: Re-start Shim in CentOS-7
+        run: docker exec scidb systemctl restart shimsvc
+        if: ${{ matrix.OS == 'centos-7' }}
+
+      - name: Re-Start Shim in Ubuntu Xenial
+        run: docker exec scidb service shimsvc restart
+        if: ${{ matrix.OS == 'xenial' }}
+
+      - name: Wait for SciDB to start
+        run: while ! curl http://localhost:8080/version; do sleep 5; done
+
+      - name: Install remotes
+        run: install.packages("remotes")
+        shell: Rscript {0}
+
+      - name: Install R arrow package
+        run: install.packages("arrow")
+        shell: Rscript {0}
+
+      - name: Install OS dependencies for rcmdcheck
+        run: |
+          while read -r cmd
+          do
+            eval sudo $cmd
+          done < <( Rscript -e 'writeLines(remotes::system_requirements(os = "ubuntu", os_release = "20.04", package = "rcmdcheck"))')
+
+      - name: Install Basic dependencies
+        run: install.packages(c("rcmdcheck"))
+        shell: Rscript {0}
+
+      - name: Install OS dependencies
+        run: |
+          while read -r cmd
+          do
+            eval sudo $cmd
+          done < <( Rscript -e 'writeLines(remotes::system_requirements("ubuntu", "20.04"))')
+
+      - name: Install SciDB-R dependencies
+        run: remotes::install_deps(dependencies = TRUE)
+        shell: Rscript {0}
+
+      - name: Build and check
+        env:
+          SCIDB_TEST_HOST: 127.0.0.1
+        run: |
+          options(crayon.enabled = TRUE)
+          rcmdcheck::rcmdcheck(args = "--no-manual", error_on = "error")
+        shell: Rscript {0}
