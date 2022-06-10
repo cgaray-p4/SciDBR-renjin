@@ -9,5 +9,8 @@
         <module name="scidb-package" />
       </profile>
     </annotationProcessing>
+    <bytecodeTargetLevel>
+      <module name="scidb-package" target="1.5" />
+    </bytecodeTargetLevel>
   </component>
 </project>
